@@ -1,169 +1,197 @@
-# Attendly deployment guide
+# Attendly: free interviewer deployment
 
-Attendly is a React/Vite frontend with a Django REST API. The recommended free demo deployment is:
+Attendly uses this no-card demo architecture:
 
 ```text
-Vercel React frontend → Render Django API → Neon PostgreSQL
-                                      ↘ Gmail API
-GitHub Actions runs reminder and absence commands every 15 minutes.
+Vercel React frontend → PythonAnywhere Django API → SQLite
+                                      ↘ Gmail SMTP
+GitHub Actions calls the protected scheduler endpoint every 15 minutes.
 ```
 
-The production database starts empty. No demo passwords or pre-created users are committed.
+The production database starts empty. Do not commit demo passwords, `.env` files, Gmail app passwords, or provider tokens.
 
-## Local development
+## 1. Push the repository to GitHub
+
+Create a public GitHub repository and push the project:
 
 ```powershell
-Copy-Item .env.example backend\.env
-cd backend
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
+git remote set-url origin https://github.com/YOUR_USERNAME/attendance-tracker.git
+git add .
+git commit -m "Prepare Attendly for free deployment"
+git push -u origin main
+```
+
+## 2. Create a Gmail App Password
+
+Use a separate Gmail account for the demo.
+
+1. Enable 2-Step Verification on the Gmail account.
+2. Open Google Account → Security → App passwords.
+3. Create an app password named `Attendly`.
+4. Copy the generated 16-character password.
+
+Use the app password, not the normal Gmail password. Gmail app passwords require 2-Step Verification: https://support.google.com/mail/answer/185833
+
+## 3. Deploy the backend to PythonAnywhere
+
+Create a free PythonAnywhere account and a web app using the Python version supported by the account.
+
+In a PythonAnywhere Bash console:
+
+```bash
+git clone https://github.com/YOUR_USERNAME/attendance-tracker.git
+cd attendance-tracker/backend
+python3 -m venv ~/.virtualenvs/attendly
+source ~/.virtualenvs/attendly/bin/activate
 pip install -r requirements.txt
 python manage.py migrate
-python manage.py runserver
+python manage.py collectstatic --noinput
 ```
 
-In a second terminal:
+Set the web app’s virtualenv to:
+
+```text
+/home/YOUR_PYTHONANYWHERE_USERNAME/.virtualenvs/attendly
+```
+
+Set the web app source directory to:
+
+```text
+/home/YOUR_PYTHONANYWHERE_USERNAME/attendance-tracker/backend
+```
+
+Edit the PythonAnywhere WSGI file and replace its contents with the following. If the free-account interface has an environment-variable section, use that instead; never commit the values below to GitHub.
+
+```python
+import os
+import sys
+
+project_path = '/home/YOUR_PYTHONANYWHERE_USERNAME/attendance-tracker/backend'
+if project_path not in sys.path:
+    sys.path.insert(0, project_path)
+
+os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'website.settings')
+
+os.environ.update({
+    'DJANGO_SECRET_KEY': 'paste-a-long-random-secret-here',
+    'DEBUG': 'False',
+    'ALLOWED_HOSTS': 'YOUR_USERNAME.pythonanywhere.com',
+    'CORS_ALLOWED_ORIGINS': 'https://YOUR_VERCEL_PROJECT.vercel.app',
+    'CSRF_TRUSTED_ORIGINS': 'https://YOUR_VERCEL_PROJECT.vercel.app',
+    'TIME_ZONE': 'Asia/Kolkata',
+    'EMAIL_HOST': 'smtp.gmail.com',
+    'EMAIL_PORT': '587',
+    'EMAIL_USE_TLS': 'True',
+    'EMAIL_HOST_USER': 'your-demo@gmail.com',
+    'EMAIL_HOST_PASSWORD': 'paste-the-gmail-app-password-here',
+    'DEFAULT_FROM_EMAIL': 'your-demo@gmail.com',
+    'SCHEDULER_SECRET': 'paste-a-random-secret-of-at-least-32-characters',
+})
+
+from django.core.wsgi import get_wsgi_application
+application = get_wsgi_application()
+```
+
+In the PythonAnywhere web app configuration, add these environment variables. PythonAnywhere’s web UI may require adding them through the WSGI file or account environment-variable settings, depending on the account interface:
+
+```text
+DJANGO_SECRET_KEY=<long random value>
+DEBUG=False
+ALLOWED_HOSTS=YOUR_USERNAME.pythonanywhere.com
+CORS_ALLOWED_ORIGINS=https://YOUR_VERCEL_PROJECT.vercel.app
+CSRF_TRUSTED_ORIGINS=https://YOUR_VERCEL_PROJECT.vercel.app
+TIME_ZONE=Asia/Kolkata
+EMAIL_HOST=smtp.gmail.com
+EMAIL_PORT=587
+EMAIL_USE_TLS=True
+EMAIL_HOST_USER=your-demo@gmail.com
+EMAIL_HOST_PASSWORD=<16-character Gmail app password>
+DEFAULT_FROM_EMAIL=your-demo@gmail.com
+SCHEDULER_SECRET=<random value of at least 32 characters>
+```
+
+Generate secrets locally with:
 
 ```powershell
-cd frontend\my-react-app
-npm install
-npm run dev
+python -c "import secrets; print(secrets.token_urlsafe(64))"
 ```
 
-When Gmail credentials are absent and `DEBUG=True`, emails are printed through Django’s console email backend. Production requires Gmail API credentials.
-
-## Gmail API setup
-
-1. Create or use a separate Gmail account for this demo.
-2. Create a Google Cloud project and enable the Gmail API.
-3. Create OAuth credentials for a desktop application.
-4. Download the client secret JSON locally; do not commit it.
-5. Generate an offline refresh token:
-
-   ```powershell
-   pip install -r backend\requirements.txt
-   python scripts\generate_gmail_token.py path\to\client_secret.json
-   ```
-
-6. Store the printed values as Render environment variables and GitHub repository secrets:
-
-   ```text
-   GMAIL_CLIENT_ID
-   GMAIL_CLIENT_SECRET
-   GMAIL_REFRESH_TOKEN
-   GMAIL_SENDER_EMAIL
-   ```
-
-Never put these values in `VITE_*` variables or frontend source code. To revoke access, remove the OAuth client/token in Google Cloud and create a new token.
-
-## Neon database
-
-1. Create a Neon PostgreSQL project.
-2. Copy its SSL connection string into `DATABASE_URL`.
-3. Use the same value in Render and GitHub Actions secrets.
-4. Run migrations after deployment:
-
-   ```text
-   python manage.py showmigrations
-   python manage.py migrate
-   ```
-
-Production uses PostgreSQL whenever `DATABASE_URL` exists. Local development falls back to SQLite when it does not.
-
-## Render API deployment
-
-The repository includes `render.yaml`. Connect the public GitHub repository to Render and deploy the blueprint.
-
-The service uses:
+Reload the PythonAnywhere web app and test:
 
 ```text
-Root directory: backend
-Build command: pip install -r requirements.txt && python manage.py collectstatic --noinput
-Start command: python manage.py migrate && gunicorn website.wsgi:application --bind 0.0.0.0:$PORT
-Health check: /api/health/
+https://YOUR_USERNAME.pythonanywhere.com/api/health/
 ```
 
-Configure these environment variables in Render:
+Expected response:
+
+```json
+{"status":"ok"}
+```
+
+SQLite is stored at `backend/db.sqlite3`. Keep this file in the PythonAnywhere project directory; do not use temporary directories.
+
+## 4. Deploy the frontend to Vercel
+
+1. Import the GitHub repository into Vercel.
+2. Set the root directory to `frontend/my-react-app`.
+3. Set the build command to `npm run build`.
+4. Set the output directory to `dist`.
+5. Add this environment variable:
 
 ```text
-DEBUG=False
-DJANGO_SECRET_KEY=<new random secret>
-DATABASE_URL=<Neon SSL URL>
-ALLOWED_HOSTS=<exact Render hostname>
-CORS_ALLOWED_ORIGINS=https://<exact Vercel hostname>
-CSRF_TRUSTED_ORIGINS=https://<exact Vercel hostname>
-TIME_ZONE=Asia/Kolkata
-GMAIL_CLIENT_ID=<secret>
-GMAIL_CLIENT_SECRET=<secret>
-GMAIL_REFRESH_TOKEN=<secret>
-GMAIL_SENDER_EMAIL=<demo Gmail address>
+VITE_API_URL=https://YOUR_USERNAME.pythonanywhere.com/api
 ```
 
-The free Render API may sleep after inactivity and take about one minute to wake up. This is expected for this interviewer-focused deployment. The local filesystem is not used for production data.
+Deploy and copy the Vercel URL. Then update PythonAnywhere’s `CORS_ALLOWED_ORIGINS` and `CSRF_TRUSTED_ORIGINS` with the exact Vercel URL and reload the backend.
 
-## Vercel frontend deployment
+The SPA rewrite is already configured in `frontend/my-react-app/vercel.json`.
 
-Create a Vercel project connected to the repository with:
+## 5. Configure GitHub Actions
+
+In GitHub repository settings, add these Actions secrets:
 
 ```text
-Root directory: frontend/my-react-app
-Build command: npm run build
-Output directory: dist
+BACKEND_CRON_URL=https://YOUR_USERNAME.pythonanywhere.com/api/internal/scheduled-tasks/
+SCHEDULER_SECRET=<the exact PythonAnywhere scheduler secret>
 ```
 
-Set this Vercel environment variable:
+The workflow at `.github/workflows/scheduled-tasks.yml` sends the secret in the `X-Scheduler-Secret` header. The backend then runs:
 
 ```text
-VITE_API_URL=https://<exact Render hostname>/api
+finalize_attendance
+send_reminders
 ```
 
-`frontend/my-react-app/vercel.json` rewrites direct SPA routes to `index.html`.
+No database, Gmail, or Django secrets are stored in GitHub Actions because the work runs inside PythonAnywhere.
 
-## GitHub scheduled tasks
-
-`.github/workflows/scheduled-tasks.yml` runs every 15 minutes and also supports manual `workflow_dispatch`.
-
-Add these GitHub repository secrets:
+To test manually:
 
 ```text
-DATABASE_URL
-DJANGO_SECRET_KEY
-GMAIL_CLIENT_ID
-GMAIL_CLIENT_SECRET
-GMAIL_REFRESH_TOKEN
-GMAIL_SENDER_EMAIL
+GitHub → repository → Actions → Attendly scheduled tasks → Run workflow
 ```
 
-The workflow runs:
+## 6. Test the interviewer flow
 
-```text
-python backend/manage.py finalize_attendance
-python backend/manage.py send_reminders
-```
-
-GitHub scheduled jobs may start later than their scheduled time. `ReminderLog` makes reminder delivery idempotent, so a delayed or repeated run will not send duplicates.
-
-## Interviewer demo flow
-
-1. Register a teacher account.
+1. Register a teacher.
 2. Verify the teacher through Gmail OTP.
 3. Log in as teacher.
 4. Create a course.
 5. Add a timetable slot for the current day and time.
-6. Open a second browser or incognito window.
-7. Register a student account.
+6. Open an incognito window.
+7. Register a student.
 8. Verify the student through Gmail OTP.
-9. Join the teacher’s course using the generated join code.
-10. Return to the teacher window and open the attendance code.
-11. Enter the code as the student.
-12. View the student attendance percentage.
-13. View the teacher attendance report.
-14. Trigger the GitHub Actions workflow manually to demonstrate scheduled services.
+9. Join the course using the teacher’s join code.
+10. Open the attendance code as teacher.
+11. Enter the code as student.
+12. Check student attendance percentage.
+13. Check teacher attendance report.
+14. Run the GitHub Actions workflow manually.
 
 ## Verification commands
 
 ```powershell
 cd backend
+$env:DEBUG='True'
 python manage.py check
 python manage.py test
 
@@ -172,4 +200,4 @@ npm run lint
 npm run build
 ```
 
-Free-tier hosting is intended here for demonstration, not real production traffic. Gmail account quotas, Render cold starts, Neon limits, and GitHub schedule delays still apply.
+The free PythonAnywhere account is suitable for this small demonstration but has limited CPU, storage, uptime, and account lifetime. GitHub scheduled jobs may run later than the nominal time.

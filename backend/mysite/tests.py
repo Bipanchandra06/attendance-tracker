@@ -3,6 +3,7 @@ import re
 from unittest.mock import patch
 
 from django.contrib.auth.models import User
+from django.test import override_settings
 from rest_framework.test import APITestCase
 
 from .models import Attendance, Course, UserProfile
@@ -21,6 +22,15 @@ class AttendanceApiTests(APITestCase):
         response = self.client.get('/api/health/')
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data, {'status': 'ok'})
+
+    @override_settings(SCHEDULER_SECRET='s' * 32)
+    def test_scheduler_endpoint_requires_secret(self):
+        self.client.force_authenticate(None)
+        response = self.client.post('/api/internal/scheduled-tasks/')
+        self.assertEqual(response.status_code, 401)
+        response = self.client.post('/api/internal/scheduled-tasks/', HTTP_X_SCHEDULER_SECRET='s' * 32)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data['status'], 'ok')
 
     @patch("mysite.views.send_email")
     def test_registration_and_login(self, send_email):

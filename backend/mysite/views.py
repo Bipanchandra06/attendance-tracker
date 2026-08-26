@@ -1,11 +1,15 @@
 import hashlib
+import hmac
+import io
 import secrets
 from datetime import datetime, timedelta
 
+from django.conf import settings
 from django.contrib.auth.models import User
 from django.contrib.auth import authenticate
 from django.contrib.auth.hashers import make_password
 from django.contrib.auth.hashers import check_password
+from django.core.management import call_command
 from django.db import transaction
 from django.db.models import Count, Q
 from django.utils import timezone
@@ -38,6 +42,24 @@ def role(request, expected):
 @permission_classes([AllowAny])
 def health(request):
     return Response({"status": "ok"})
+
+
+@api_view(["POST"])
+@permission_classes([AllowAny])
+def run_scheduled_tasks(request):
+    provided = request.headers.get('X-Scheduler-Secret', '')
+    if not settings.SCHEDULER_SECRET or not hmac.compare_digest(provided, settings.SCHEDULER_SECRET):
+        return Response({"detail": "Unauthorized scheduler request."}, status=status.HTTP_401_UNAUTHORIZED)
+
+    finalize_output = io.StringIO()
+    reminders_output = io.StringIO()
+    call_command('finalize_attendance', stdout=finalize_output)
+    call_command('send_reminders', stdout=reminders_output)
+    return Response({
+        "status": "ok",
+        "finalize_attendance": finalize_output.getvalue().strip(),
+        "send_reminders": reminders_output.getvalue().strip(),
+    })
 
 class CourseView(viewsets.ModelViewSet):
     queryset=Course.objects.none()
