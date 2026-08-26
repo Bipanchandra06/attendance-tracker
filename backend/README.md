@@ -8,7 +8,7 @@ python manage.py migrate
 python manage.py runserver
 ```
 
-Before starting the server, edit `.env` and replace the placeholder Gmail address and App Password. Use a Gmail App Password, not the normal Gmail password. Never commit `.env`.
+For full deployment instructions, see the repository [README.md](../README.md). Never commit `.env` or any Gmail credentials.
 
 The API runs at `http://localhost:8000` and accepts the Vite frontend at `http://localhost:5173`.
 
@@ -36,10 +36,10 @@ All resource queries are restricted to the authenticated user. Run the test suit
 - `GET/PATCH /api/account/` reads or updates email and reminder preferences.
 - `POST /api/account/password/` changes the password.
 
-Run the reminder command hourly at 10 minutes past the hour with Windows Task Scheduler or another scheduler:
+Run the reminder command from a scheduler or GitHub Actions:
 
 ```text
 python manage.py send_reminders
 ```
 
-At 07:10 it sends that day's timetable. At every other `:10` run, it sends a reminder for an hour-starting class if attendance has not been recorded in its first 10 minutes. Reminder emails respect each user's opt-out setting and are logged to prevent duplicates. The command exits without sending if started at another minute.
+After 07:10 it sends that day's timetable once. It also sends a reminder when an hour-starting class has passed its first 10 minutes and attendance has not been recorded. Reminder emails use Gmail API in production, respect each user's opt-out setting, and are logged to prevent duplicates.

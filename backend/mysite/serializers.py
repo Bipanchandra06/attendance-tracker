@@ -3,7 +3,8 @@ from django.contrib.auth.hashers import check_password, make_password
 from django.contrib.auth.password_validation import validate_password
 from django.core.validators import EmailValidator
 from django.core.exceptions import ValidationError
-from mysite.models import Timetableslot, Course, Attendance, EmailPreference
+from mysite.models import (Attendance, AttendanceSession, Course, CourseEnrollment,
+                            EmailPreference, Timetableslot)
 from rest_framework import serializers
 
 
@@ -25,10 +26,11 @@ class VerifyRegistrationSerializer(serializers.Serializer):
 
 class AccountSerializer(serializers.ModelSerializer):
     reminders_enabled = serializers.BooleanField(source="email_preference.reminders_enabled", required=False)
+    role = serializers.CharField(source="profile.role", read_only=True)
 
     class Meta:
         model = User
-        fields = ("username", "email", "reminders_enabled")
+        fields = ("username", "email", "role", "reminders_enabled")
         read_only_fields = ("username",)
 
     def update(self, instance, validated_data):
@@ -78,14 +80,14 @@ class Timetableserializer(serializers.ModelSerializer):
 class Courseserializer(serializers.ModelSerializer):
     class Meta:
         model = Course
-        fields = ("id", "name", "code", "user")
-        read_only_fields = ("user",)
+        fields = ("id", "name", "code", "teacher", "join_code", "created_at", "user")
+        read_only_fields = ("user", "teacher", "join_code", "created_at")
     
 class Attendanceserializer(serializers.ModelSerializer):
     class Meta:
         model = Attendance
-        fields = ("id", "course", "timetable_slot", "date", "is_present", "user")
-        read_only_fields = ("user",)
+        fields = ("id", "course", "timetable_slot", "attendance_session", "date", "is_present", "user", "marked_at")
+        read_only_fields = ("user", "marked_at")
 
     def validate_course(self, course):
         if course.user_id != self.context["request"].user.id:
@@ -107,6 +109,26 @@ class Attendanceserializer(serializers.ModelSerializer):
         if Attendance.objects.filter(**query).exclude(pk=self.instance.pk if self.instance else None).exists():
             raise serializers.ValidationError("Attendance has already been recorded for this slot and date.")
         return attrs
+
+
+class JoinCourseSerializer(serializers.Serializer):
+    join_code = serializers.CharField(max_length=20)
+
+
+class AttendanceCodeSerializer(serializers.Serializer):
+    code = serializers.RegexField(regex=r"^\d{6}$", error_messages={"invalid": "Attendance code must be six digits."})
+
+
+class AttendanceSessionSerializer(serializers.ModelSerializer):
+    course_name = serializers.CharField(source="timetable_slot.course.name", read_only=True)
+    course_code = serializers.CharField(source="timetable_slot.course.code", read_only=True)
+    slot_time = serializers.TimeField(source="timetable_slot.time", read_only=True)
+    code = serializers.CharField(read_only=True)
+
+    class Meta:
+        model = AttendanceSession
+        fields = ("id", "timetable_slot", "session_date", "expires_at", "is_open", "course_name", "course_code", "slot_time", "code")
+        read_only_fields = fields
 
 
 

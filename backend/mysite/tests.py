@@ -5,24 +5,32 @@ from unittest.mock import patch
 from django.contrib.auth.models import User
 from rest_framework.test import APITestCase
 
-from .models import Attendance, Course
+from .models import Attendance, Course, UserProfile
 
 
 class AttendanceApiTests(APITestCase):
     def setUp(self):
         self.user = User.objects.create_user(username="alice", password="StrongPass123!")
         self.other_user = User.objects.create_user(username="bob", password="StrongPass123!")
+        UserProfile.objects.create(user=self.user, role="student")
+        UserProfile.objects.create(user=self.other_user, role="student")
         self.client.force_authenticate(self.user)
 
-    @patch("mysite.views.send_mail")
-    def test_registration_and_login(self, send_mail):
+    def test_health_endpoint_is_public(self):
+        self.client.force_authenticate(None)
+        response = self.client.get('/api/health/')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data, {'status': 'ok'})
+
+    @patch("mysite.views.send_email")
+    def test_registration_and_login(self, send_email):
         response = self.client.post("/api/register/", {
             "username": "new-user",
             "email": "new@example.com",
             "password": "StrongPass123!",
         })
         self.assertEqual(response.status_code, 202)
-        otp = re.search(r"\b\d{6}\b", send_mail.call_args.args[1]).group()
+        otp = re.search(r"\b\d{6}\b", send_email.call_args.args[1]).group()
         response = self.client.post("/api/register/verify/", {"username": "new-user", "otp": otp})
         self.assertEqual(response.status_code, 201)
         response = self.client.post("/api/token/", {

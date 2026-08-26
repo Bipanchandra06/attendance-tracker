@@ -1,10 +1,14 @@
 from django.db import models
 from django.contrib.auth.models import User
+import secrets
 
 class Course(models.Model):
     user=models.ForeignKey(User,on_delete=models.CASCADE)
+    teacher=models.ForeignKey(User,on_delete=models.CASCADE,related_name="taught_courses",null=True,blank=True)
     name=models.CharField(max_length=100)
     code=models.CharField(max_length=10)
+    join_code=models.CharField(max_length=20,unique=True,null=True,blank=True)
+    created_at=models.DateTimeField(auto_now_add=True)
     def __str__(self):
         return self.name+"-"+self.code
 
@@ -23,6 +27,8 @@ class Attendance(models.Model):
     user=models.ForeignKey(User,on_delete=models.CASCADE)   
     course=models.ForeignKey(Course, on_delete=models.CASCADE)
     timetable_slot=models.ForeignKey(Timetableslot, on_delete=models.CASCADE, null=True, blank=True)
+    attendance_session=models.ForeignKey("AttendanceSession", on_delete=models.CASCADE, null=True, blank=True)
+    marked_at=models.DateTimeField(auto_now_add=True, null=True)
     date=models.DateField()
     is_present=models.BooleanField(default=False)
     class Meta:
@@ -33,6 +39,7 @@ class Attendance(models.Model):
 
 
 class PendingRegistration(models.Model):
+    role = models.CharField(max_length=20, default="student")
     username = models.CharField(max_length=150)
     email = models.EmailField()
     password_hash = models.CharField(max_length=128)
@@ -58,3 +65,32 @@ class ReminderLog(models.Model):
         constraints = [
             models.UniqueConstraint(fields=("user", "timetable_slot", "date", "kind"), name="unique_reminder_log"),
         ]
+
+
+class UserProfile(models.Model):
+    ROLE_CHOICES = (("student", "Student"), ("teacher", "Teacher"))
+    user = models.OneToOneField(User, on_delete=models.CASCADE, related_name="profile")
+    role = models.CharField(max_length=20, choices=ROLE_CHOICES, default="student")
+
+
+class CourseEnrollment(models.Model):
+    student = models.ForeignKey(User, on_delete=models.CASCADE, related_name="course_enrollments")
+    course = models.ForeignKey(Course, on_delete=models.CASCADE, related_name="enrollments")
+    joined_at = models.DateTimeField(auto_now_add=True)
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=("student", "course"), name="unique_student_course_enrollment")]
+
+
+class AttendanceSession(models.Model):
+    timetable_slot = models.ForeignKey(Timetableslot, on_delete=models.CASCADE, related_name="attendance_sessions")
+    teacher = models.ForeignKey(User, on_delete=models.CASCADE, related_name="attendance_sessions")
+    session_date = models.DateField()
+    code_hash = models.CharField(max_length=128)
+    expires_at = models.DateTimeField()
+    is_open = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=("timetable_slot", "session_date"), condition=models.Q(is_open=True), name="unique_open_slot_session_date")]

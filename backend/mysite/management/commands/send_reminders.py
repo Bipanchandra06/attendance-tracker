@@ -1,10 +1,11 @@
 from datetime import datetime, timedelta
 
 from django.core.management.base import BaseCommand
-from django.core.mail import send_mail
+from django.contrib.auth.models import User
 from django.utils import timezone
 
-from mysite.models import Attendance, EmailPreference, ReminderLog, Timetableslot
+from mysite.models import Attendance, CourseEnrollment, EmailPreference, ReminderLog, Timetableslot
+from mysite.email_service import send_email
 
 
 class Command(BaseCommand):
@@ -13,19 +14,25 @@ class Command(BaseCommand):
     def handle(self, *args, **options):
         now = timezone.localtime()
         today = now.date()
-        if now.minute != 10:
-            self.stdout.write('No reminder run: command is scheduled for :10 each hour.')
-            return
-        slots = Timetableslot.objects.select_related('user', 'course').filter(day=now.strftime('%A'))
+        slots = list(Timetableslot.objects.select_related('course').filter(day=now.strftime('%A')).order_by('time'))
         sent = 0
-        for user in {slot.user for slot in slots}:
+        student_ids = CourseEnrollment.objects.filter(
+            course_id__in={slot.course_id for slot in slots}, is_active=True
+        ).values_list('student_id', flat=True).distinct()
+        for user_id in student_ids:
+            user = User.objects.get(id=user_id)
             preference, _ = EmailPreference.objects.get_or_create(user=user)
             if not preference.reminders_enabled or not user.email:
                 continue
-            user_slots = [slot for slot in slots if slot.user_id == user.id]
-            if now.hour == 7 and not ReminderLog.objects.filter(user=user, date=today, kind='morning').exists():
+            enrolled_course_ids = set(CourseEnrollment.objects.filter(
+                student=user, is_active=True
+            ).values_list('course_id', flat=True))
+            user_slots = [slot for slot in slots if slot.course_id in enrolled_course_ids]
+            if not user_slots:
+                continue
+            if now.hour == 7 and now.minute >= 10 and not ReminderLog.objects.filter(user=user, date=today, kind='morning').exists():
                 schedule = '\n'.join(f'{slot.time.strftime("%H:%M")} - {slot.end_time.strftime("%H:%M") if slot.end_time else "?"}: {slot.course.name} ({slot.course.code})' for slot in user_slots)
-                send_mail("Today's class schedule", f"Good morning!\n\nToday's schedule:\n{schedule or 'No classes scheduled.'}", None, [user.email])
+                send_email("Today's class schedule", f"Good morning!\n\nToday's schedule:\n{schedule or 'No classes scheduled.'}", [user.email])
                 ReminderLog.objects.create(user=user, timetable_slot=user_slots[0], date=today, kind='morning')
                 sent += 1
             for slot in user_slots:
@@ -36,7 +43,7 @@ class Command(BaseCommand):
                     continue
                 if ReminderLog.objects.filter(user=user, timetable_slot=slot, date=today, kind='late').exists():
                     continue
-                send_mail(f'Attendance reminder: {slot.course.name}', f'Your {slot.course.name} class started at {slot.time.strftime("%H:%M")}. Please record your attendance.', None, [user.email])
+                send_email(f'Attendance reminder: {slot.course.name}', f'Your {slot.course.name} class started at {slot.time.strftime("%H:%M")}. Please record your attendance.', [user.email])
                 ReminderLog.objects.create(user=user, timetable_slot=slot, date=today, kind='late')
                 sent += 1
         self.stdout.write(self.style.SUCCESS(f'Sent {sent} reminder email(s).'))
