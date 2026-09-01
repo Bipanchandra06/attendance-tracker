@@ -20,9 +20,11 @@ from rest_framework.routers import DefaultRouter
 from mysite.views import (CourseView, TimetableView, AttendanceView, account,
                           attendance_summary, change_password, create_attendance_session,
                           close_attendance_session, join_course, mark_session_attendance,
-                          regenerate_join_code, register, register_teacher, student_courses,
-                          student_timetable, teacher_attendance_report, teacher_slot,
-                          teacher_courses, verify_registration, health, run_scheduled_tasks)
+                          mark_geofenced_attendance, regenerate_join_code, register, 
+                          register_teacher, student_courses, student_timetable, 
+                          teacher_attendance_report, teacher_slot, teacher_courses, 
+                          verify_registration, health, run_scheduled_tasks,
+                          student_attendance_sessions)
 from rest_framework_simplejwt.views import (
     TokenObtainPairView,
     TokenRefreshView)
@@ -52,5 +54,7 @@ urlpatterns = [
     path('api/student/courses/', student_courses, name='student-courses'),
     path('api/student/courses/join/', join_course, name='join-course'),
     path('api/student/timetable/', student_timetable, name='student-timetable'),
+    path('api/student/attendance-sessions/', student_attendance_sessions, name='student-attendance-sessions'),
     path('api/student/attendance/mark/', mark_session_attendance, name='mark-session-attendance'),
+    path('api/student/attendance/mark-geofenced/', mark_geofenced_attendance, name='mark-geofenced-attendance'),
 ]

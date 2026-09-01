@@ -8,21 +8,42 @@ async function request(path, options = {}, retry = true) {
   const tokens = getTokens()
   const headers = { 'Content-Type': 'application/json', ...(options.headers || {}) }
   if (tokens?.access) headers.Authorization = `Bearer ${tokens.access}`
-  const response = await fetch(`${API_URL}${path}`, { ...options, headers })
-  if (response.status === 401 && retry && tokens?.refresh) {
-    const refresh = await fetch(`${API_URL}/token/refresh/`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ refresh: tokens.refresh }),
-    })
-    if (refresh.ok) {
-      const next = await refresh.json()
-      saveTokens({ ...tokens, access: next.access })
-      return request(path, options, false)
+  
+  try {
+    const response = await fetch(`${API_URL}${path}`, { ...options, headers })
+    
+    if (response.status === 401 && retry && tokens?.refresh) {
+      console.log('Token expired, attempting refresh...')
+      try {
+        const refresh = await fetch(`${API_URL}/token/refresh/`, {
+          method: 'POST', 
+          headers: { 'Content-Type': 'application/json' }, 
+          body: JSON.stringify({ refresh: tokens.refresh }),
+        })
+        if (refresh.ok) {
+          const next = await refresh.json()
+          saveTokens({ ...tokens, access: next.access })
+          console.log('Token refreshed, retrying request...')
+          return request(path, options, false)
+        } else {
+          console.log('Token refresh failed, clearing tokens')
+          clearTokens()
+          throw new Error('Token expired. Please sign in again.')
+        }
+      } catch (err) {
+        console.error('Token refresh error:', err)
+        clearTokens()
+        throw new Error('Authentication failed. Please sign in again.', { cause: err })
+      }
     }
-    clearTokens()
+    
+    const data = response.status === 204 ? null : await response.json().catch(() => ({}))
+    if (!response.ok) throw new Error(Object.values(data).flat().join(' ') || `Request failed: ${response.status}`)
+    return data
+  } catch (err) {
+    console.error('Request error:', err)
+    throw err
   }
-  const data = response.status === 204 ? null : await response.json().catch(() => ({}))
-  if (!response.ok) throw new Error(Object.values(data).flat().join(' ') || 'Request failed')
-  return data
 }
 
 export const api = {
@@ -49,12 +70,14 @@ export const api = {
   studentCourses: () => request('/student/courses/'),
   joinCourse: (join_code) => request('/student/courses/join/', { method: 'POST', body: JSON.stringify({ join_code }) }),
   studentTimetable: () => request('/student/timetable/'),
+  studentAttendanceSessions: () => request('/student/attendance-sessions/'),
   markSession: (code) => request('/student/attendance/mark/', { method: 'POST', body: JSON.stringify({ code }) }),
+  markGeofencedAttendance: (sessionId, latitude, longitude, deviceFingerprint) => request('/student/attendance/mark-geofenced/', { method: 'POST', body: JSON.stringify({ session_id: sessionId, latitude, longitude, device_fingerprint: deviceFingerprint }) }),
   teacherCourses: () => request('/teacher/courses/'),
   createTeacherCourse: (payload) => request('/teacher/courses/', { method: 'POST', body: JSON.stringify(payload) }),
   regenerateCode: (id) => request(`/teacher/courses/${id}/regenerate-code/`, { method: 'POST' }),
   createTeacherSlot: (courseId, payload) => request(`/teacher/courses/${courseId}/slots/`, { method: 'POST', body: JSON.stringify(payload) }),
-  createSession: (slotId) => request(`/teacher/slots/${slotId}/attendance-session/`, { method: 'POST' }),
+  createSession: (slotId, locationData = {}) => request(`/teacher/slots/${slotId}/attendance-session/`, { method: 'POST', body: JSON.stringify(locationData) }),
   closeSession: (sessionId) => request(`/teacher/attendance-sessions/${sessionId}/close/`, { method: 'POST' }),
   teacherReport: (courseId) => request(`/teacher/courses/${courseId}/attendance/`),
 }

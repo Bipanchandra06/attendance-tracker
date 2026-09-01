@@ -1,6 +1,5 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { api, clearTokens, getTokens, saveTokens } from './api'
-import { getGeolocation, generateDeviceFingerprint } from './geofenceUtils'
 import './App.css'
 
 const days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
@@ -27,108 +26,16 @@ function App() {
   useEffect(() => { if (authenticated) { api.account().then(setAccount).catch(err => { clearTokens(); setAuthenticated(false); setError(err.message) }) } }, [authenticated])
   if (!authenticated) return <Auth onLogin={() => setAuthenticated(true)} />
   if (!account) return <main className="empty">Loading your account...</main>
-  const teacher = account.role?.toLowerCase() === 'teacher'; const nav = teacher ? ['Dashboard', 'My Courses', 'Attendance Reports', 'Account'] : ['Dashboard', 'My Courses', 'Enter Attendance', 'Account']
+  const teacher = account.role?.toLowerCase() === 'teacher'; const nav = teacher ? ['Dashboard', 'My Courses', 'Account'] : ['Dashboard', 'My Courses', 'Enter Attendance', 'Account']
   const logout = () => { clearTokens(); setAuthenticated(false) }
   return <div className="app-shell"><aside><div className="brand"><span>AT</span><strong>Attendly</strong></div><div className="role-badge">{teacher ? 'Teacher workspace' : 'Student workspace'}</div><nav>{nav.map(item => <button className={view === item ? 'active' : ''} onClick={() => setView(item)} key={item}>{item}</button>)}</nav><button className="logout" onClick={logout}>Sign out</button></aside><main className="content"><header><div><span className="eyebrow">YOUR SPACE</span><h1>{view}</h1></div></header>{error && <div className="error banner">{error}</div>}{view === 'Account' ? <Account account={account} onUpdate={setAccount} /> : teacher ? <Teacher view={view} /> : <Student view={view} />}</main></div>
 }
 
-function Student({ view }) { const [courses, setCourses] = useState([]); const [slots, setSlots] = useState([]); const [summary, setSummary] = useState(null)
-  const load = () => Promise.all([api.studentCourses(), api.studentTimetable(), api.summary()]).then(([c, s, summaryData]) => { setCourses(c); setSlots(s); setSummary(summaryData) }).catch(err => console.error(err)); useEffect(() => { load() }, [])
+function Student({ view }) { const [courses, setCourses] = useState([]); const [slots, setSlots] = useState([]); const [summary, setSummary] = useState(null); const [code, setCode] = useState(''); const [message, setMessage] = useState('')
+  const load = () => Promise.all([api.studentCourses(), api.studentTimetable(), api.summary()]).then(([c, s, summaryData]) => { setCourses(c); setSlots(s); setSummary(summaryData) }).catch(err => setMessage(err.message)); useEffect(() => { load() }, [])
   if (view === 'My Courses') return <section className="panel"><div className="panel-heading"><div><h2>Joined courses</h2><p>Enter a teacher's course code to join.</p></div></div><JoinCourse onJoined={load} />{courses.map(c => <div className="list-row" key={c.id}><div><strong>{c.name}</strong><small>{c.code}</small></div></div>)}</section>
-  if (view === 'Enter Attendance') return <section className="panel"><div className="panel-heading"><div><h2>Mark attendance</h2><p>Use the code from your teacher or check in via location.</p></div></div><StudentAttendanceForm onSuccess={load} /></section>
+  if (view === 'Enter Attendance') return <section className="panel"><div className="panel-heading"><div><h2>Mark attendance</h2><p>Enter the six-digit code shown by your teacher.</p></div></div><form className="inline-form" onSubmit={async e => { e.preventDefault(); try { const result = await api.markSession(code); setMessage(`${result.course_name} marked present.`); setCode('') } catch (err) { setMessage(err.message) } }}><input required pattern="[0-9]{6}" maxLength="6" placeholder="Attendance code" value={code} onChange={e => setCode(e.target.value)} /><button className="primary">Submit code</button></form>{message && <p className="notice">{message}</p>}</section>
   const today = currentDay(); return <><section className="hero-panel"><div><span className="eyebrow">STUDENT OVERVIEW</span><h2>Your week, <em>in rhythm.</em></h2><p>{today} · join a live class with its attendance code.</p></div><div className="score"><strong>{summary?.attendance_percentage || 0}%</strong><span>overall attendance</span></div></section><section className="panel course-pulse student-pulse"><div className="panel-heading"><div><h2>Course attendance</h2><p>Keep an eye on every class.</p></div></div>{summary?.courses?.length ? summary.courses.map(course => <div className="course-row" key={course.course_id}><div><strong>{course.course_name}</strong><small>{course.course_code} · {course.present_classes}/{course.total_classes} attended</small></div><strong className={course.attendance_percentage >= 75 ? 'good' : 'warn'}>{course.attendance_percentage}%</strong></div>) : <div className="empty">Join a course to see attendance.</div>}</section><section className="panel weekly-panel"><div className="panel-heading"><h2>My timetable</h2></div>{days.map(day => <div className={`day-row ${day === today ? 'today' : ''}`} key={day}><strong className="day-label">{day}{day === today && <small>Today</small>}</strong><div className="day-slots">{slots.filter(s => s.day === day).length ? slots.filter(s => s.day === day).map(s => <div className="slot-card" key={s.id}><div><strong>{courses.find(c => c.id === s.course)?.name || 'Course'}</strong><small>{courses.find(c => c.id === s.course)?.code} · {s.time.slice(0, 5)}{s.end_time && ` - ${s.end_time.slice(0, 5)}`}</small></div></div>) : <span className="no-slot">No class scheduled</span>}</div></div>)}</section></>
-}
-
-function StudentAttendanceForm({ onSuccess }) {
-  const [code, setCode] = useState('')
-  const [message, setMessage] = useState('')
-  const [loading, setLoading] = useState(false)
-  const [useGeofence, setUseGeofence] = useState(false)
-  const [sessions, setSessions] = useState([])
-  
-  // Fetch active sessions for geofence-based attendance
-  const fetchSessions = async () => {
-    try {
-      setSessions(await api.studentAttendanceSessions())
-    } catch (err) {
-      setMessage(err.message)
-    }
-  }
-  
-  const handleCodeSubmit = async (e) => {
-    e.preventDefault()
-    setLoading(true)
-    try {
-      const result = await api.markSession(code)
-      setMessage(`${result.course_name} marked present.`)
-      setCode('')
-      onSuccess()
-    } catch (err) {
-      setMessage(err.message)
-    } finally {
-      setLoading(false)
-    }
-  }
-  
-  const handleGeofencedAttendance = async (selectedSession) => {
-    if (!sessions.length) {
-      setMessage('No live geofenced session is available right now.')
-      return
-    }
-    setLoading(true)
-    try {
-      const session = selectedSession || sessions.find(item => item.latitude != null && item.longitude != null)
-      if (!session) throw new Error('No live session has geofence enabled.')
-      const location = await getGeolocation()
-      const deviceId = generateDeviceFingerprint()
-      
-      const result = await api.markGeofencedAttendance(
-        session.id,
-        location.latitude,
-        location.longitude,
-        deviceId
-      )
-      
-      setMessage(`${result.course_name} marked present via geofence.`)
-      onSuccess()
-    } catch (err) {
-      setMessage(err.message)
-    } finally {
-      setLoading(false)
-    }
-  }
-  
-  return <>
-    <div className="attendance-tabs">
-      <button className={!useGeofence ? 'active' : ''} onClick={() => setUseGeofence(false)}>Code-based</button>
-      <button className={useGeofence ? 'active' : ''} onClick={() => { setUseGeofence(true); fetchSessions() }}>Geofenced</button>
-    </div>
-    
-    {!useGeofence ? (
-      <form className="inline-form" onSubmit={handleCodeSubmit}>
-        <input
-          required
-          pattern="[0-9]{6}"
-          maxLength="6"
-          placeholder="Attendance code"
-          value={code}
-          onChange={e => setCode(e.target.value)}
-          disabled={loading}
-        />
-        <button className="primary" disabled={loading}>{loading ? 'Submitting...' : 'Submit code'}</button>
-      </form>
-    ) : (
-      <div className="geofence-attendance">
-        {sessions.length ? sessions.map(session => <div className="live-session" key={session.id}>
-          <div><strong>{session.course_name}</strong><small>{session.course_code} · {session.slot_time?.slice(0, 5)} · {session.latitude != null ? `Within ${session.radius_meters}m` : 'Location check unavailable'}</small></div>
-          <button className="primary" onClick={() => handleGeofencedAttendance(session)} disabled={loading || session.latitude == null}>{loading ? 'Checking in...' : 'Check in'}</button>
-        </div>) : <div className="empty">No live geofenced sessions. Ask your teacher to open one.</div>}
-        <button className="secondary" onClick={fetchSessions} disabled={loading}>Refresh sessions</button>
-      </div>
-    )}
-    
-    {message && <p className={message.includes('denied') || message.includes('outside') || message.includes('already linked') ? 'error' : 'notice'}>{message}</p>}
-  </>
 }
 
 function JoinCourse({ onJoined }) { const [code, setCode] = useState(''); const [message, setMessage] = useState(''); return <><form className="inline-form" onSubmit={async e => { e.preventDefault(); try { await api.joinCourse(code); setCode(''); setMessage('Course joined.'); onJoined() } catch (err) { setMessage(err.message) } }}><input required placeholder="Course join code" value={code} onChange={e => setCode(e.target.value.toUpperCase())} /><button className="primary">Join course</button></form>{message && <p className="notice">{message}</p>}</> }
@@ -136,86 +43,11 @@ function JoinCourse({ onJoined }) { const [code, setCode] = useState(''); const 
 function Teacher({ view }) { const [courses, setCourses] = useState([]); const [form, setForm] = useState({ name: '', code: '' }); const [message, setMessage] = useState(''); const [sessions, setSessions] = useState({})
   const load = () => api.teacherCourses().then(setCourses).catch(err => setMessage(err.message)); useEffect(() => { load() }, [])
   async function createCourse(e) { e.preventDefault(); try { await api.createTeacherCourse(form); setForm({ name: '', code: '' }); setMessage('Course created. Add slots below.'); load() } catch (err) { setMessage(err.message) } }
-  if (view === 'Attendance Reports') return <TeacherReports courses={courses} />
   if (view === 'My Courses') return <section><div className="panel"><div className="panel-heading"><div><h2>Create a course</h2><p>Only teachers can publish courses and timetable slots.</p></div></div><form className="inline-form" onSubmit={createCourse}><input required placeholder="Course name" value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} /><input required placeholder="Code" value={form.code} onChange={e => setForm({ ...form, code: e.target.value.toUpperCase() })} /><button className="primary">Create course</button></form>{message && <p className="notice">{message}</p>}</div>{courses.map(course => <TeacherCourse course={course} sessions={sessions} setSessions={setSessions} reload={load} key={course.id} />)}</section>
   return <><section className="hero-panel"><div><span className="eyebrow">TEACHER OVERVIEW</span><h2>Make attendance <em>simple.</em></h2><p>Open a two-minute code when class begins.</p></div><div className="score"><strong>{courses.length}</strong><span>courses taught</span></div></section><section className="stat-grid">{[['My courses', courses.length], ['Enrolled students', courses.reduce((total, c) => total + (c.enrollment_count || 0), 0)], ['Live sessions', Object.keys(sessions).length], ['Role', 'Teacher']].map(([label, value]) => <div className="stat" key={label}><span>{label}</span><strong>{value}</strong></div>)}</section><section className="panel"><div className="panel-heading"><h2>Course management</h2></div>{courses.length ? courses.map(c => <div className="list-row" key={c.id}><div><strong>{c.name}</strong><small>{c.code} · Join code: {c.join_code || 'pending'}</small></div></div>) : <div className="empty">Create your first course from My Courses.</div>}</section></>
 }
 
-function TeacherReports({ courses }) {
-  const [reports, setReports] = useState({})
-  const [loading, setLoading] = useState(false)
-  async function loadReports() {
-    setLoading(true)
-    try {
-      const entries = await Promise.all(courses.map(async course => [course.id, await api.teacherReport(course.id)]))
-      setReports(Object.fromEntries(entries))
-    } catch (err) { alert(err.message) } finally { setLoading(false) }
-  }
-  useEffect(() => {
-    if (!courses.length) return
-    Promise.all(courses.map(async course => [course.id, await api.teacherReport(course.id)]))
-      .then(entries => setReports(Object.fromEntries(entries)))
-      .catch(err => alert(err.message))
-  }, [courses])
-  return <section className="panel reports-panel"><div className="panel-heading"><div><h2>Attendance reports</h2><p>Review attendance separately for every course.</p></div><button className="secondary" onClick={loadReports} disabled={loading}>{loading ? 'Loading...' : 'Refresh reports'}</button></div>{courses.length ? courses.map(course => <div className="report-course" key={course.id}><h3>{course.name} <small>{course.code}</small></h3>{reports[course.id]?.length ? <div className="report-table">{reports[course.id].map(row => <div className="report-row" key={row.student_id}><div><strong>{row.student_username}</strong><small>{row.student_email}</small></div><strong className={row.attendance_percentage >= 75 ? 'good' : 'warn'}>{row.attendance_percentage}% <small>{row.present_classes}/{row.total_classes} present</small></strong></div>)}</div> : <div className="empty">No attendance records yet.</div>}</div>) : <div className="empty">Create a course to view attendance reports.</div>}</section>
-}
-
-function TeacherCourse({ course, sessions, setSessions, reload }) { 
-  const [slot, setSlot] = useState({ day: 'Monday', time: '', end_time: '' }); 
-  const [now, setNow] = useState(new Date()); 
-  const [useGeofence, setUseGeofence] = useState(false);
-  const [radius, setRadius] = useState(100);
-  const slots = useMemo(() => course.timetableslots || [], [course.timetableslots]); 
-  
-  useEffect(() => { const timer = setInterval(() => setNow(new Date()), 30000); return () => clearInterval(timer) }, []); 
-  useEffect(() => { const timer = setInterval(() => { setSessions(previous => Object.fromEntries(Object.entries(previous).filter(([, session]) => new Date(session.expires_at) > new Date()))) }, 10000); return () => clearInterval(timer) }, [setSessions]); 
-  
-  async function addSlot(e) { e.preventDefault(); try { await api.createTeacherSlot(course.id, slot); setSlot({ ...slot, time: '', end_time: '' }); reload() } catch (err) { alert(err.message) } } 
-  
-  async function openSession(slotId) { 
-    try {
-      let locationData = {};
-      if (useGeofence) {
-        const location = await getGeolocation();
-        locationData = {
-          latitude: location.latitude,
-          longitude: location.longitude,
-          radius_meters: radius,
-          geofence_enabled: true
-        };
-      } else {
-        locationData.geofence_enabled = false;
-      }
-      const session = await api.createSession(slotId, locationData);
-      setSessions(previous => ({ ...previous, [slotId]: session }))
-    } catch (err) { alert(err.message || 'Unable to open attendance session.') } 
-  } 
-  
-  async function closeSession(slotId) { const session = sessions[slotId]; if (!session) return; try { await api.closeSession(session.id); setSessions(previous => { const next = { ...previous }; delete next[slotId]; return next }) } catch (err) { alert(err.message) } }
-
-  useEffect(() => {
-    slots.forEach((currentSlot, index) => {
-      const row = document.querySelectorAll('.slot-row')[index]
-      if (!row) return
-      const actions = row.lastElementChild
-      const existing = actions.querySelector('.session-code')
-      const session = sessions[currentSlot.id]
-      if (session?.code) {
-        const code = existing || document.createElement('div')
-        code.className = 'session-code'
-        code.innerHTML = '<small>Attendance code</small>'
-        const value = document.createElement('strong')
-        value.textContent = session.code
-        code.appendChild(value)
-        if (!existing) actions.insertBefore(code, actions.firstChild)
-      } else if (existing) {
-        existing.remove()
-      }
-    })
-  }, [sessions, slots])
-  
-  return <section className="panel account-panel"><div className="panel-heading"><div><h2>{course.name} <small>{course.code}</small></h2><p>Join code: <strong>{course.join_code}</strong> · {course.enrollment_count || 0} students</p></div><button className="refresh" onClick={async () => { const result = await api.regenerateCode(course.id); alert(`New code: ${result.join_code}`); reload() }}>Regenerate code</button></div><form className="inline-form" onSubmit={addSlot}><select value={slot.day} onChange={e => setSlot({ ...slot, day: e.target.value })}>{days.map(day => <option key={day}>{day}</option>)}</select><input required type="time" aria-label="Start time" value={slot.time} onChange={e => setSlot({ ...slot, time: e.target.value })} /><input type="time" aria-label="End time" value={slot.end_time} onChange={e => setSlot({ ...slot, end_time: e.target.value })} /><button className="primary">Add slot</button></form><div className="geofence-controls"><label className="checkbox"><input type="checkbox" checked={useGeofence} onChange={e => setUseGeofence(e.target.checked)} />Enable geofence attendance</label>{useGeofence && <label>Radius (meters): <input type="number" min="10" max="1000" value={radius} onChange={e => setRadius(parseInt(e.target.value))} /></label>}</div>{slots.map(s => <div className="slot-row" key={s.id}><div><strong>{s.day}</strong><small>{s.time.slice(0, 5)}{s.end_time && ` - ${s.end_time.slice(0, 5)}`}</small></div><div><button className={slotIsActive(s, now) ? 'active' : sessions[s.id] ? 'open' : ''} disabled={!sessions[s.id] && !slotIsActive(s, now)} onClick={() => sessions[s.id] ? closeSession(s.id) : openSession(s.id)}>{sessions[s.id] ? 'Close' : slotIsActive(s, now) ? 'Open session' : 'Start'}</button></div></div>)}</section>
-}
+function TeacherCourse({ course, sessions, setSessions, reload }) { const [slot, setSlot] = useState({ day: 'Monday', time: '', end_time: '' }); const [report, setReport] = useState(null); const [now, setNow] = useState(new Date()); const slots = course.timetableslots || []; useEffect(() => { const timer = setInterval(() => setNow(new Date()), 30000); return () => clearInterval(timer) }, []); useEffect(() => { const timer = setInterval(() => { setSessions(previous => Object.fromEntries(Object.entries(previous).filter(([, session]) => new Date(session.expires_at) > new Date()))) }, 10000); return () => clearInterval(timer) }, [setSessions]); async function addSlot(e) { e.preventDefault(); try { await api.createTeacherSlot(course.id, slot); setSlot({ ...slot, time: '', end_time: '' }); reload() } catch (err) { alert(err.message) } } async function openSession(slotId) { try { const session = await api.createSession(slotId); setSessions(previous => ({ ...previous, [slotId]: session })) } catch (err) { alert(err.message) } } async function closeSession(slotId) { const session = sessions[slotId]; if (!session) return; try { await api.closeSession(session.id); setSessions(previous => { const next = { ...previous }; delete next[slotId]; return next }) } catch (err) { alert(err.message) } } return <section className="panel account-panel"><div className="panel-heading"><div><h2>{course.name} <small>{course.code}</small></h2><p>Join code: <strong>{course.join_code}</strong> · {course.enrollment_count || 0} students</p></div><button className="refresh" onClick={async () => { const result = await api.regenerateCode(course.id); alert(`New code: ${result.join_code}`); reload() }}>Regenerate code</button></div><form className="inline-form" onSubmit={addSlot}><select value={slot.day} onChange={e => setSlot({ ...slot, day: e.target.value })}>{days.map(day => <option key={day}>{day}</option>)}</select><input required type="time" aria-label="Start time" value={slot.time} onChange={e => setSlot({ ...slot, time: e.target.value })} /><input required type="time" aria-label="End time" value={slot.end_time} onChange={e => setSlot({ ...slot, end_time: e.target.value })} /><button className="primary">Add slot</button></form>{slots.map(item => { const active = slotIsActive(item, now); return <div className="list-row" key={item.id}><div><strong>{item.day} · {item.time.slice(0, 5)} - {item.end_time?.slice(0, 5) || addHour(item.time)}</strong></div>{sessions[item.id] ? <span><span className="pill present">Code: {sessions[item.id].code}</span><button className="refresh" onClick={() => closeSession(item.id)}>Close</button></span> : <button className="primary" disabled={!active} onClick={() => openSession(item.id)}>{active ? 'Open 2-min code' : 'Available during class'}</button>}</div> })}<button className="refresh" onClick={async () => { try { setReport(await api.teacherReport(course.id)) } catch (err) { alert(err.message) } }}>View attendance report</button>{report && <div className="report-list">{report.length ? report.map(row => <div className="list-row" key={row.student_id}><div><strong>{row.student_username}</strong><small>{row.present_classes}/{row.total_classes} present</small></div><strong>{row.attendance_percentage}%</strong></div>) : <div className="empty">No students enrolled yet.</div>}</div>}</section> }
 
 function Account({ account, onUpdate }) { const [email, setEmail] = useState(account.email); const [enabled, setEnabled] = useState(account.reminders_enabled); const [passwords, setPasswords] = useState({ current_password: '', new_password: '' }); const [message, setMessage] = useState(''); const [error, setError] = useState(''); async function save(e) { e.preventDefault(); try { const result = await api.updateAccount({ email, reminders_enabled: enabled }); onUpdate(result); setMessage('Account saved.'); setError('') } catch (err) { setError(err.message) } } async function savePassword(e) { e.preventDefault(); try { await api.changePassword(passwords); setPasswords({ current_password: '', new_password: '' }); setMessage('Password updated.'); setError('') } catch (err) { setError(err.message) } } return <><section className="panel account-panel"><div className="panel-heading"><div><h2>Account</h2><p>Role: <strong>{account.role}</strong></p></div></div><form className="settings-form" onSubmit={save}><label>Email<input required type="email" value={email} onChange={e => setEmail(e.target.value)} /></label><label className="checkbox"><input type="checkbox" checked={enabled} onChange={e => setEnabled(e.target.checked)} />Send schedule and attendance reminders</label><button className="primary">Save account</button></form></section><section className="panel account-panel"><h2>Change password</h2><form className="settings-form" onSubmit={savePassword}><label>Current password<input required type="password" value={passwords.current_password} onChange={e => setPasswords({ ...passwords, current_password: e.target.value })} /></label><label>New password<input required type="password" value={passwords.new_password} onChange={e => setPasswords({ ...passwords, new_password: e.target.value })} /></label><button className="primary">Update password</button></form></section>{message && <p className="notice">{message}</p>}{error && <div className="error banner">{error}</div>}</> }
 

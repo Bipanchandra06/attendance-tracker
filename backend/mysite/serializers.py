@@ -86,7 +86,7 @@ class Courseserializer(serializers.ModelSerializer):
 class Attendanceserializer(serializers.ModelSerializer):
     class Meta:
         model = Attendance
-        fields = ("id", "course", "timetable_slot", "attendance_session", "date", "is_present", "user", "marked_at")
+        fields = ("id", "course", "timetable_slot", "attendance_session", "date", "is_present", "user", "marked_at", "student_latitude", "student_longitude")
         read_only_fields = ("user", "marked_at")
 
     def validate_course(self, course):
@@ -119,16 +119,28 @@ class AttendanceCodeSerializer(serializers.Serializer):
     code = serializers.RegexField(regex=r"^\d{6}$", error_messages={"invalid": "Attendance code must be six digits."})
 
 
+class GeofencedAttendanceSerializer(serializers.Serializer):
+    """Serializer for geofenced attendance marking by students."""
+    session_id = serializers.IntegerField()
+    latitude = serializers.DecimalField(max_digits=9, decimal_places=6)
+    longitude = serializers.DecimalField(max_digits=9, decimal_places=6)
+    device_fingerprint = serializers.CharField(max_length=256)  # Client-side generated device ID
+
+
 class AttendanceSessionSerializer(serializers.ModelSerializer):
     course_name = serializers.CharField(source="timetable_slot.course.name", read_only=True)
     course_code = serializers.CharField(source="timetable_slot.course.code", read_only=True)
     slot_time = serializers.TimeField(source="timetable_slot.time", read_only=True)
-    code = serializers.CharField(read_only=True)
+    code = serializers.SerializerMethodField()
+
+    def get_code(self, obj):
+        # The raw attendance code is only attached by the create-session view.
+        return None
 
     class Meta:
         model = AttendanceSession
-        fields = ("id", "timetable_slot", "session_date", "expires_at", "is_open", "course_name", "course_code", "slot_time", "code")
-        read_only_fields = fields
+        fields = ("id", "timetable_slot", "session_date", "expires_at", "is_open", "course_name", "course_code", "slot_time", "code", "latitude", "longitude", "radius_meters")
+        read_only_fields = ("id", "session_date", "expires_at", "is_open", "course_name", "course_code", "slot_time", "code", "created_at")
 
 
 

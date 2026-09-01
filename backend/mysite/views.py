@@ -21,13 +21,14 @@ from rest_framework.exceptions import PermissionDenied
 
 from .models import (Attendance, AttendanceSession, Course, CourseEnrollment,
                      EmailPreference, PendingRegistration, Timetableslot,
-                     UserProfile)
+                     UserProfile, DeviceFingerprint)
 from .email_service import send_email
 from .serializers import (AccountSerializer, Attendanceserializer, Courseserializer,
                           AttendanceCodeSerializer, AttendanceSessionSerializer,
                           JoinCourseSerializer, PasswordSerializer,
                           RegistrationSerializer, Timetableserializer,
-                          VerifyRegistrationSerializer)
+                          VerifyRegistrationSerializer, GeofencedAttendanceSerializer)
+from .geofence_utils import is_within_geofence
 
 
 def role(request, expected):
@@ -289,6 +290,22 @@ def student_timetable(request):
     return Response(Timetableserializer(Timetableslot.objects.filter(course__enrollments__student=request.user, course__enrollments__is_active=True).order_by("day", "time"), many=True).data)
 
 
+@api_view(["GET"])
+def student_attendance_sessions(request):
+    """Return currently open sessions for courses this student has joined."""
+    if not role(request, "student"):
+        return Response({"detail": "Student access required."}, status=403)
+    sessions = AttendanceSession.objects.filter(
+        is_open=True,
+        expires_at__gt=timezone.now(),
+        latitude__isnull=False,
+        longitude__isnull=False,
+        timetable_slot__course__enrollments__student=request.user,
+        timetable_slot__course__enrollments__is_active=True,
+    ).select_related("timetable_slot__course").order_by("expires_at")
+    return Response(AttendanceSessionSerializer(sessions, many=True).data)
+
+
 @api_view(["POST"])
 def teacher_slot(request, course_id):
     if not role(request, "teacher"):
@@ -311,22 +328,38 @@ def create_attendance_session(request, slot_id):
         return Response({"detail": "Slot not found."}, status=404)
     today = timezone.localdate()
     now = timezone.localtime()
-    if slot.day != now.strftime("%A"):
-        return Response({"detail": "Attendance codes can only be generated on the scheduled day."}, status=400)
-    start = timezone.make_aware(datetime.combine(today, slot.time))
-    fallback_end = (datetime.combine(today, slot.time) + timedelta(hours=1)).time()
-    end = timezone.make_aware(datetime.combine(today, slot.end_time or fallback_end))
-    if not start <= now <= end:
-        return Response({"detail": "Attendance codes can only be generated during the class time."}, status=400)
     AttendanceSession.objects.filter(
         timetable_slot=slot, session_date=today, is_open=True, expires_at__lte=timezone.now()
     ).update(is_open=False)
     if AttendanceSession.objects.filter(timetable_slot=slot, session_date=today, is_open=True).exists():
         return Response({"detail": "An attendance session is already open."}, status=400)
-    code = f"{secrets.randbelow(1000000):06d}"
-    session = AttendanceSession.objects.create(timetable_slot=slot, teacher=request.user, session_date=today, code_hash=make_password(code), expires_at=timezone.now() + timedelta(minutes=2))
+    # Extract geofence parameters from request
+    latitude = request.data.get("latitude")
+    longitude = request.data.get("longitude")
+    radius_meters = request.data.get("radius_meters", 100)
+    geofence_enabled = bool(request.data.get("geofence_enabled", False))
+    if (latitude is None) != (longitude is None):
+        return Response({"detail": "Latitude and longitude must be provided together."}, status=400)
+    if geofence_enabled and (latitude is None or longitude is None):
+        return Response({"detail": "Your location is required to open a geofenced session. Allow location access and try again."}, status=400)
+    if latitude is not None:
+        try:
+            latitude, longitude, radius_meters = float(latitude), float(longitude), int(radius_meters)
+        except (TypeError, ValueError):
+            return Response({"detail": "Location and radius values are invalid."}, status=400)
+        if not (-90 <= latitude <= 90 and -180 <= longitude <= 180 and 10 <= radius_meters <= 1000):
+            return Response({"detail": "Location or radius is outside the allowed range."}, status=400)
+    geofence_enabled = geofence_enabled or (latitude is not None and longitude is not None)
+    code = f"{secrets.randbelow(1000000):06d}" if not geofence_enabled else ""
+    
+    session = AttendanceSession.objects.create(
+        timetable_slot=slot, teacher=request.user, session_date=today, 
+        code_hash=make_password(code) if code else "", expires_at=timezone.now() + timedelta(minutes=2),
+        latitude=latitude, longitude=longitude, radius_meters=radius_meters
+    )
     data = AttendanceSessionSerializer(session).data
-    data["code"] = code
+    if code:
+        data["code"] = code
     return Response(data, status=201)
 
 
@@ -356,6 +389,104 @@ def mark_session_attendance(request):
     if not created:
         return Response({"detail": "Attendance already marked."}, status=400)
     return Response({"course_name": session.timetable_slot.course.name, "course_code": session.timetable_slot.course.code, "date": session.session_date, "is_present": True, "slot_time": session.timetable_slot.time}, status=201)
+
+
+@api_view(["POST"])
+def mark_geofenced_attendance(request):
+    """
+    Mark attendance using geofence validation.
+    Validates student location against teacher location and radius.
+    Also performs device fingerprint validation to prevent multi-account abuse.
+    """
+    if not role(request, "student"):
+        return Response({"detail": "Student access required."}, status=403)
+    
+    serializer = GeofencedAttendanceSerializer(data=request.data)
+    serializer.is_valid(raise_exception=True)
+    
+    data = serializer.validated_data
+    session_id = data["session_id"]
+    student_lat = data["latitude"]
+    student_lon = data["longitude"]
+    device_fingerprint = data["device_fingerprint"]
+    
+    # Get the session
+    session = AttendanceSession.objects.filter(
+        id=session_id, is_open=True, expires_at__gt=timezone.now()
+    ).select_related("timetable_slot__course").first()
+    
+    if not session:
+        return Response({"detail": "Invalid or expired attendance session."}, status=400)
+    
+    # Check course enrollment
+    if not CourseEnrollment.objects.filter(
+        student=request.user, course=session.timetable_slot.course, is_active=True
+    ).exists():
+        return Response({"detail": "You are not enrolled in this course."}, status=403)
+    
+    # Validate geofence
+    if session.latitude is None or session.longitude is None:
+        return Response({"detail": "Teacher location not available for this session."}, status=400)
+    
+    if not is_within_geofence(
+        student_lat, student_lon,
+        session.latitude, session.longitude,
+        session.radius_meters
+    ):
+        return Response({
+            "detail": f"You are outside the attendance zone. Maximum distance: {session.radius_meters}m."
+        }, status=400)
+    
+    # Device fingerprint validation - check for same device being used by multiple accounts
+    device_hash = hashlib.sha256(device_fingerprint.encode()).hexdigest()
+    existing_device = DeviceFingerprint.objects.filter(
+        course=session.timetable_slot.course,
+        session=session,
+        device_hash=device_hash
+    ).exclude(user=request.user).first()
+    
+    if existing_device:
+        return Response({
+            "detail": "This device is already linked to another account for this session."
+        }, status=400)
+    
+    # Record device fingerprint
+    DeviceFingerprint.objects.update_or_create(
+        user=request.user,
+        course=session.timetable_slot.course,
+        session=session,
+        defaults={"device_hash": device_hash}
+    )
+    
+    # Check for existing attendance
+    if Attendance.objects.filter(
+        user=request.user,
+        course=session.timetable_slot.course,
+        timetable_slot=session.timetable_slot,
+        attendance_session=session,
+        date=session.session_date
+    ).exists():
+        return Response({"detail": "Attendance already marked for this session."}, status=400)
+    
+    # Mark attendance
+    attendance = Attendance.objects.create(
+        user=request.user,
+        course=session.timetable_slot.course,
+        timetable_slot=session.timetable_slot,
+        attendance_session=session,
+        date=session.session_date,
+        is_present=True,
+        student_latitude=student_lat,
+        student_longitude=student_lon
+    )
+    
+    return Response({
+        "course_name": session.timetable_slot.course.name,
+        "course_code": session.timetable_slot.course.code,
+        "date": session.session_date,
+        "is_present": True,
+        "slot_time": session.timetable_slot.time
+    }, status=201)
 
 
 @api_view(["GET"])
