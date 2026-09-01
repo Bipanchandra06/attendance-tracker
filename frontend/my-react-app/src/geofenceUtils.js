@@ -53,7 +53,7 @@ export function getGeolocation() {
         else if (error.code === 3) message = 'Location request timed out.'
         reject(new Error(message))
       },
-      { timeout: 10000, enableHighAccuracy: false }
+      { timeout: 20000, enableHighAccuracy: true, maximumAge: 0 }
     )
   })
 }
