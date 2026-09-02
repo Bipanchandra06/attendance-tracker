@@ -20,12 +20,21 @@ class Command(BaseCommand):
                 continue
             students = CourseEnrollment.objects.filter(course=session.timetable_slot.course, is_active=True).values_list('student_id', flat=True)
             for student_id in students:
-                _, was_created = Attendance.objects.get_or_create(
-                    user_id=student_id, course=session.timetable_slot.course,
-                    timetable_slot=session.timetable_slot, attendance_session=session,
-                    date=session.session_date, defaults={'is_present': False},
-                )
-                created += was_created
+                # Attendance is unique per student, timetable slot, and date.
+                # A student may already have checked in through another session,
+                # so do not use a session-specific get_or_create lookup here.
+                existing = Attendance.objects.filter(
+                    user_id=student_id,
+                    timetable_slot=session.timetable_slot,
+                    date=session.session_date,
+                ).exists()
+                if not existing:
+                    Attendance.objects.create(
+                        user_id=student_id, course=session.timetable_slot.course,
+                        timetable_slot=session.timetable_slot, attendance_session=session,
+                        date=session.session_date, is_present=False,
+                    )
+                    created += 1
             session.is_open = False
             session.save(update_fields=['is_open'])
         self.stdout.write(self.style.SUCCESS(f'Created {created} absent attendance record(s).'))

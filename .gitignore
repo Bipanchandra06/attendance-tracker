@@ -16,3 +16,17 @@ gmail-token.json
 client_secret*.json
 .vscode/
 .idea/
+
+# Generated project notes and verification documents
+/COMPLETION_SUMMARY.md
+/DEPLOYMENT_GUIDE.md
+/FINAL_SUMMARY.md
+/GEOFENCE_IMPLEMENTATION.md
+/IMPLEMENTATION_SUMMARY.md
+/INDEX.md
+/MODEL_CHANGES_DETAILED.md
+/QUICK_REFERENCE.md
+/README_GEOFENCE.md
+/START_HERE.md
+/VERIFICATION_CHECKLIST.md
+/YOU_ARE_DONE.md
