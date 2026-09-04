@@ -43,23 +43,13 @@ function StudentAttendanceForm({ onSuccess }) {
   const [code, setCode] = useState('')
   const [message, setMessage] = useState('')
   const [loading, setLoading] = useState(false)
-  const [useGeofence, setUseGeofence] = useState(false)
-  const [sessions, setSessions] = useState([])
-  
-  // Fetch active sessions for geofence-based attendance
-  const fetchSessions = async () => {
-    try {
-      setSessions(await api.studentAttendanceSessions())
-    } catch (err) {
-      setMessage(err.message)
-    }
-  }
   
   const handleCodeSubmit = async (e) => {
     e.preventDefault()
     setLoading(true)
     try {
-      const result = await api.markSession(code)
+      const location = await getGeolocation()
+      const result = await api.markSession(code, location.latitude, location.longitude, generateDeviceFingerprint())
       setMessage(`${result.course_name} marked present.`)
       setCode('')
       onSuccess()
@@ -70,62 +60,12 @@ function StudentAttendanceForm({ onSuccess }) {
     }
   }
   
-  const handleGeofencedAttendance = async (selectedSession) => {
-    if (!sessions.length) {
-      setMessage('No live geofenced session is available right now.')
-      return
-    }
-    setLoading(true)
-    try {
-      const session = selectedSession || sessions.find(item => item.latitude != null && item.longitude != null)
-      if (!session) throw new Error('No live session has geofence enabled.')
-      const location = await getGeolocation()
-      const deviceId = generateDeviceFingerprint()
-      
-      const result = await api.markGeofencedAttendance(
-        session.id,
-        location.latitude,
-        location.longitude,
-        deviceId
-      )
-      
-      setMessage(`${result.course_name} marked present via geofence.`)
-      onSuccess()
-    } catch (err) {
-      setMessage(err.message)
-    } finally {
-      setLoading(false)
-    }
-  }
-  
   return <>
-    <div className="attendance-tabs">
-      <button className={!useGeofence ? 'active' : ''} onClick={() => setUseGeofence(false)}>Code-based</button>
-      <button className={useGeofence ? 'active' : ''} onClick={() => { setUseGeofence(true); fetchSessions() }}>Geofenced</button>
-    </div>
-    
-    {!useGeofence ? (
-      <form className="inline-form" onSubmit={handleCodeSubmit}>
-        <input
-          required
-          pattern="[0-9]{6}"
-          maxLength="6"
-          placeholder="Attendance code"
-          value={code}
-          onChange={e => setCode(e.target.value)}
-          disabled={loading}
-        />
-        <button className="primary" disabled={loading}>{loading ? 'Submitting...' : 'Submit code'}</button>
-      </form>
-    ) : (
-      <div className="geofence-attendance">
-        {sessions.length ? sessions.map(session => <div className="live-session" key={session.id}>
-          <div><strong>{session.course_name}</strong><small>{session.course_code} · {session.slot_time?.slice(0, 5)} · {session.latitude != null ? `Within ${session.radius_meters}m` : 'Location check unavailable'}</small></div>
-          <button className="primary" onClick={() => handleGeofencedAttendance(session)} disabled={loading || session.latitude == null}>{loading ? 'Checking in...' : 'Check in'}</button>
-        </div>) : <div className="empty">No live geofenced sessions. Ask your teacher to open one.</div>}
-        <button className="secondary" onClick={fetchSessions} disabled={loading}>Refresh sessions</button>
-      </div>
-    )}
+    <p>Enter your teacher's six-digit code. Your location will be checked automatically.</p>
+    <form className="inline-form" onSubmit={handleCodeSubmit}>
+      <input required pattern="[0-9]{6}" maxLength="6" placeholder="Attendance code" value={code} onChange={e => setCode(e.target.value)} disabled={loading} />
+      <button className="primary" disabled={loading}>{loading ? 'Checking code and location...' : 'Mark attendance'}</button>
+    </form>
     
     {message && <p className={message.includes('denied') || message.includes('outside') || message.includes('already linked') ? 'error' : 'notice'}>{message}</p>}
   </>
@@ -163,8 +103,9 @@ function TeacherReports({ courses }) {
 function TeacherCourse({ course, sessions, setSessions, reload }) { 
   const [slot, setSlot] = useState({ day: 'Monday', time: '', end_time: '' }); 
   const [now, setNow] = useState(new Date()); 
-  const [useGeofence, setUseGeofence] = useState(false);
   const [radius, setRadius] = useState(100);
+  const useGeofence = true;
+  const setUseGeofence = () => {};
   const slots = useMemo(() => course.timetableslots || [], [course.timetableslots]); 
   
   useEffect(() => { const timer = setInterval(() => setNow(new Date()), 30000); return () => clearInterval(timer) }, []); 
@@ -174,18 +115,15 @@ function TeacherCourse({ course, sessions, setSessions, reload }) {
   
   async function openSession(slotId) { 
     try {
-      let locationData = {};
-      if (useGeofence) {
-        const location = await getGeolocation();
-        locationData = {
-          latitude: location.latitude,
-          longitude: location.longitude,
-          radius_meters: radius,
-          geofence_enabled: true
-        };
-      } else {
-        locationData.geofence_enabled = false;
+      const location = await getGeolocation();
+      if (!Number.isFinite(location.latitude) || !Number.isFinite(location.longitude)) {
+        throw new Error('A valid location is required before starting the session.')
       }
+      const locationData = {
+        latitude: location.latitude,
+        longitude: location.longitude,
+        radius_meters: radius,
+      };
       const session = await api.createSession(slotId, locationData);
       setSessions(previous => ({ ...previous, [slotId]: session }))
     } catch (err) { alert(err.message || 'Unable to open attendance session.') } 
@@ -194,8 +132,10 @@ function TeacherCourse({ course, sessions, setSessions, reload }) {
   async function closeSession(slotId) { const session = sessions[slotId]; if (!session) return; try { await api.closeSession(session.id); setSessions(previous => { const next = { ...previous }; delete next[slotId]; return next }) } catch (err) { alert(err.message) } }
 
   useEffect(() => {
+    const panel = [...document.querySelectorAll('.account-panel')].find(item => item.querySelector('.panel-heading h2')?.textContent.includes(`${course.name} ${course.code}`))
+    if (!panel) return
     slots.forEach((currentSlot, index) => {
-      const row = document.querySelectorAll('.slot-row')[index]
+      const row = panel.querySelectorAll('.slot-row')[index]
       if (!row) return
       const actions = row.lastElementChild
       const existing = actions.querySelector('.session-code')
@@ -212,7 +152,7 @@ function TeacherCourse({ course, sessions, setSessions, reload }) {
         existing.remove()
       }
     })
-  }, [sessions, slots])
+  }, [sessions, slots, course.name, course.code])
   
   return <section className="panel account-panel"><div className="panel-heading"><div><h2>{course.name} <small>{course.code}</small></h2><p>Join code: <strong>{course.join_code}</strong> · {course.enrollment_count || 0} students</p></div><button className="refresh" onClick={async () => { const result = await api.regenerateCode(course.id); alert(`New code: ${result.join_code}`); reload() }}>Regenerate code</button></div><form className="inline-form" onSubmit={addSlot}><select value={slot.day} onChange={e => setSlot({ ...slot, day: e.target.value })}>{days.map(day => <option key={day}>{day}</option>)}</select><input required type="time" aria-label="Start time" value={slot.time} onChange={e => setSlot({ ...slot, time: e.target.value })} /><input type="time" aria-label="End time" value={slot.end_time} onChange={e => setSlot({ ...slot, end_time: e.target.value })} /><button className="primary">Add slot</button></form><div className="geofence-controls"><label className="checkbox"><input type="checkbox" checked={useGeofence} onChange={e => setUseGeofence(e.target.checked)} />Enable geofence attendance</label>{useGeofence && <label>Radius (meters): <input type="number" min="10" max="1000" value={radius} onChange={e => setRadius(parseInt(e.target.value))} /></label>}</div>{slots.map(s => <div className="slot-row" key={s.id}><div><strong>{s.day}</strong><small>{s.time.slice(0, 5)}{s.end_time && ` - ${s.end_time.slice(0, 5)}`}</small></div><div><button className={slotIsActive(s, now) ? 'active' : sessions[s.id] ? 'open' : ''} disabled={!sessions[s.id] && !slotIsActive(s, now)} onClick={() => sessions[s.id] ? closeSession(s.id) : openSession(s.id)}>{sessions[s.id] ? 'Close' : slotIsActive(s, now) ? 'Open session' : 'Start'}</button></div></div>)}</section>
 }

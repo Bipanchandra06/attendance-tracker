@@ -119,6 +119,13 @@ class AttendanceCodeSerializer(serializers.Serializer):
     code = serializers.RegexField(regex=r"^\d{6}$", error_messages={"invalid": "Attendance code must be six digits."})
 
 
+class CombinedAttendanceSerializer(serializers.Serializer):
+    code = serializers.RegexField(regex=r"^\d{6}$", error_messages={"invalid": "Attendance code must be six digits."})
+    latitude = serializers.DecimalField(max_digits=9, decimal_places=6)
+    longitude = serializers.DecimalField(max_digits=9, decimal_places=6)
+    device_fingerprint = serializers.CharField(max_length=256)
+
+
 class GeofencedAttendanceSerializer(serializers.Serializer):
     """Serializer for geofenced attendance marking by students."""
     session_id = serializers.IntegerField()

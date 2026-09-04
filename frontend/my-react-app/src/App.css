@@ -38,3 +38,8 @@ nav { display: grid; gap: 7px; } nav button, .logout { border: 0; border-radius:
 .report-course h3 { margin: 0 0 12px; color: var(--deep); }
 .report-row { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 8px; margin-top: 8px; background: #fbfdfb; }
 .report-row > strong { text-align: right; }
+.geofence-controls label.checkbox {
+  display: none;
+}
+.session-code { display: grid; gap: 2px; min-width: 125px; }
+.session-code strong { color: var(--deep); font-size: 20px; letter-spacing: 1px; }

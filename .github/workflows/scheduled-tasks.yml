@@ -13,6 +13,7 @@ concurrency:
 jobs:
   run-management-commands:
     runs-on: ubuntu-latest
+    timeout-minutes: 2
     env:
       BACKEND_CRON_URL: ${{ secrets.BACKEND_CRON_URL }}
       SCHEDULER_SECRET: ${{ secrets.SCHEDULER_SECRET }}
@@ -24,7 +25,8 @@ jobs:
         run: |
           test -n "$BACKEND_CRON_URL"
           test -n "$SCHEDULER_SECRET"
-          curl --fail --show-error --silent --retry 3 --retry-delay 10 \
+          curl --fail-with-body --show-error --silent --retry 3 --retry-all-errors --retry-delay 10 --connect-timeout 15 --max-time 60 \
             -X POST \
+            -H "Accept: application/json" \
             -H "X-Scheduler-Secret: $SCHEDULER_SECRET" \
             "$BACKEND_CRON_URL"

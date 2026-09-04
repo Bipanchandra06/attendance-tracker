@@ -30,14 +30,20 @@ class Command(BaseCommand):
             user_slots = [slot for slot in slots if slot.course_id in enrolled_course_ids]
             if not user_slots:
                 continue
-            if now.hour == 7 and now.minute >= 10 and not ReminderLog.objects.filter(user=user, date=today, kind='morning').exists():
+            # GitHub Actions/PythonAnywhere can run late, so send the morning
+            # message any time after 07:10 if it has not already been sent.
+            morning_due = now.hour > 7 or (now.hour == 7 and now.minute >= 10)
+            if morning_due and not ReminderLog.objects.filter(user=user, date=today, kind='morning').exists():
                 schedule = '\n'.join(f'{slot.time.strftime("%H:%M")} - {slot.end_time.strftime("%H:%M") if slot.end_time else "?"}: {slot.course.name} ({slot.course.code})' for slot in user_slots)
                 send_email("Today's class schedule", f"Good morning!\n\nToday's schedule:\n{schedule or 'No classes scheduled.'}", [user.email])
                 ReminderLog.objects.create(user=user, timetable_slot=user_slots[0], date=today, kind='morning')
                 sent += 1
             for slot in user_slots:
                 start = timezone.make_aware(datetime.combine(today, slot.time))
-                if slot.time.minute != 0 or slot.time.hour != now.hour or now < start + timedelta(minutes=10):
+                # Do not require classes to start exactly on the hour. The
+                # scheduler may run every 15 minutes and timetable times can
+                # be any minute.
+                if now < start + timedelta(minutes=10):
                     continue
                 if Attendance.objects.filter(user=user, timetable_slot=slot, date=today).exists():
                     continue

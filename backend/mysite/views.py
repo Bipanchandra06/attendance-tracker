@@ -25,6 +25,7 @@ from .models import (Attendance, AttendanceSession, Course, CourseEnrollment,
 from .email_service import send_email
 from .serializers import (AccountSerializer, Attendanceserializer, Courseserializer,
                           AttendanceCodeSerializer, AttendanceSessionSerializer,
+                          CombinedAttendanceSerializer,
                           JoinCourseSerializer, PasswordSerializer,
                           RegistrationSerializer, Timetableserializer,
                           VerifyRegistrationSerializer, GeofencedAttendanceSerializer)
@@ -333,15 +334,15 @@ def create_attendance_session(request, slot_id):
     ).update(is_open=False)
     if AttendanceSession.objects.filter(timetable_slot=slot, session_date=today, is_open=True).exists():
         return Response({"detail": "An attendance session is already open."}, status=400)
-    # Extract geofence parameters from request
+    # Every attendance session is location-bound. The code and teacher location
+    # are both required so students must pass both checks when signing in.
     latitude = request.data.get("latitude")
     longitude = request.data.get("longitude")
     radius_meters = request.data.get("radius_meters", 100)
-    geofence_enabled = bool(request.data.get("geofence_enabled", False))
     if (latitude is None) != (longitude is None):
         return Response({"detail": "Latitude and longitude must be provided together."}, status=400)
-    if geofence_enabled and (latitude is None or longitude is None):
-        return Response({"detail": "Your location is required to open a geofenced session. Allow location access and try again."}, status=400)
+    if latitude is None or longitude is None:
+        return Response({"detail": "Your location is required to open an attendance session. Allow location access and try again."}, status=400)
     if latitude is not None:
         try:
             latitude, longitude, radius_meters = float(latitude), float(longitude), int(radius_meters)
@@ -349,12 +350,11 @@ def create_attendance_session(request, slot_id):
             return Response({"detail": "Location and radius values are invalid."}, status=400)
         if not (-90 <= latitude <= 90 and -180 <= longitude <= 180 and 10 <= radius_meters <= 1000):
             return Response({"detail": "Location or radius is outside the allowed range."}, status=400)
-    geofence_enabled = geofence_enabled or (latitude is not None and longitude is not None)
-    code = f"{secrets.randbelow(1000000):06d}" if not geofence_enabled else ""
+    code = f"{secrets.randbelow(1000000):06d}"
     
     session = AttendanceSession.objects.create(
-        timetable_slot=slot, teacher=request.user, session_date=today, 
-        code_hash=make_password(code) if code else "", expires_at=timezone.now() + timedelta(minutes=2),
+        timetable_slot=slot, teacher=request.user, session_date=today,
+        code_hash=make_password(code), expires_at=timezone.now() + timedelta(minutes=1),
         latitude=latitude, longitude=longitude, radius_meters=radius_meters
     )
     data = AttendanceSessionSerializer(session).data
@@ -379,12 +379,26 @@ def close_attendance_session(request, session_id):
 def mark_session_attendance(request):
     if not role(request, "student"):
         return Response({"detail": "Student access required."}, status=403)
-    serializer = AttendanceCodeSerializer(data=request.data)
+    serializer = CombinedAttendanceSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
+    data = serializer.validated_data
     sessions = AttendanceSession.objects.filter(is_open=True, expires_at__gt=timezone.now()).select_related("timetable_slot__course")
-    session = next((item for item in sessions if check_password(serializer.validated_data["code"], item.code_hash)), None)
+    session = next((item for item in sessions if check_password(data["code"], item.code_hash)), None)
     if not session or not CourseEnrollment.objects.filter(student=request.user, course=session.timetable_slot.course, is_active=True).exists():
         return Response({"code": ["Invalid, expired, or unauthorized attendance code."]}, status=400)
+    if session.latitude is None or session.longitude is None:
+        return Response({"detail": "Teacher location is not available for this session."}, status=400)
+    if not is_within_geofence(data["latitude"], data["longitude"], session.latitude, session.longitude, session.radius_meters):
+        return Response({"detail": f"You are outside the attendance zone. Maximum distance: {session.radius_meters}m."}, status=400)
+    device_hash = hashlib.sha256(data["device_fingerprint"].encode()).hexdigest()
+    if DeviceFingerprint.objects.filter(
+        course=session.timetable_slot.course, session=session, device_hash=device_hash
+    ).exclude(user=request.user).exists():
+        return Response({"detail": "This device is already linked to another account for this session."}, status=400)
+    DeviceFingerprint.objects.update_or_create(
+        user=request.user, course=session.timetable_slot.course, session=session,
+        defaults={"device_hash": device_hash},
+    )
     attendance, created = Attendance.objects.get_or_create(user=request.user, course=session.timetable_slot.course, timetable_slot=session.timetable_slot, attendance_session=session, date=session.session_date, defaults={"is_present": True})
     if not created:
         return Response({"detail": "Attendance already marked."}, status=400)
@@ -400,6 +414,8 @@ def mark_geofenced_attendance(request):
     """
     if not role(request, "student"):
         return Response({"detail": "Student access required."}, status=403)
+
+    return Response({"detail": "Attendance requires a valid code and an in-range location."}, status=400)
     
     serializer = GeofencedAttendanceSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
